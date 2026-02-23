@@ -1,0 +1,298 @@
+<template>
+    <lightning-card title="Excel Import Config Builder" icon-name="custom:custom63">
+        <div class="slds-p-around_medium">
+            <template lwc:if={isSaving}>
+                <lightning-spinner size="small" alternative-text="Saving"></lightning-spinner>
+            </template>
+
+            <div class="slds-grid slds-wrap slds-gutters">
+                <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-3">
+                    <lightning-combobox
+                        label="Target Object"
+                        value={configForm.Target_Object_API_Name__c}
+                        options={targetObjectOptions}
+                        onchange={handleTargetObjectChange}
+                    ></lightning-combobox>
+                </div>
+
+                <div class="slds-col slds-size_1-of-1 slds-large-size_2-of-3">
+                    <lightning-record-picker
+                        label="Configuration"
+                        object-api-name="Excel_Import_Config__c"
+                        value={selectedConfigId}
+                        filter={configPickerFilter}
+                        onchange={handleRecordPickerChange}
+                    ></lightning-record-picker>
+                </div>
+            </div>
+
+            <div class="upload-panel slds-m-top_medium">
+                <div class="slds-grid slds-wrap slds-gutters">
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_2-of-3">
+                        <lightning-input
+                            type="file"
+                            label="Upload Excel File"
+                            accept=".xlsx,.xls,.csv"
+                            onchange={handleExcelFileChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-3 refresh-button">
+                        <lightning-button
+                            label="Refresh Headers"
+                            variant="neutral"
+                            onclick={handleRefreshHeaders}
+                            disabled={disableRefreshHeaders}
+                        ></lightning-button>
+                    </div>
+                </div>
+                <template lwc:if={uploadedFileName}>
+                    <p class="slds-m-top_x-small slds-text-body_small">
+                        Current file: <strong>{uploadedFileName}</strong>
+                    </p>
+                </template>
+                <template lwc:if={isParsingFile}>
+                    <lightning-spinner size="small" alternative-text="Parsing Excel"></lightning-spinner>
+                </template>
+            </div>
+
+            <template lwc:if={hasParsedHeaders}>
+                <div class="slds-m-top_medium">
+                    <h2 class="slds-text-heading_small">Detected Headers</h2>
+                    <div class="header-pill-container slds-m-top_x-small">
+                        <template for:each={parsedHeaders} for:item="item">
+                            <span key={item.column} class="header-pill">{item.column}: {item.header}</span>
+                        </template>
+                    </div>
+                </div>
+            </template>
+
+            <template lwc:if={errorMessage}>
+                <p class="slds-m-top_small slds-text-color_error">{errorMessage}</p>
+            </template>
+
+            <div class="slds-m-top_large">
+                <h2 class="slds-text-heading_small">Config Detail</h2>
+                <div class="slds-grid slds-wrap slds-gutters slds-m-top_small">
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-3">
+                        <lightning-input
+                            data-field="Name"
+                            type="text"
+                            label="Config Name"
+                            value={configForm.Name}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-3">
+                        <template lwc:if={hasSheetOptions}>
+                            <lightning-combobox
+                                data-field="Sheet_Name__c"
+                                label="Sheet Name"
+                                value={configForm.Sheet_Name__c}
+                                options={sheetOptions}
+                                onchange={handleConfigFieldChange}
+                            ></lightning-combobox>
+                        </template>
+                        <template lwc:else>
+                            <lightning-input
+                                data-field="Sheet_Name__c"
+                                type="text"
+                                label="Sheet Name"
+                                value={configForm.Sheet_Name__c}
+                                onchange={handleConfigFieldChange}
+                            ></lightning-input>
+                        </template>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-4">
+                        <lightning-input
+                            data-field="Skip_Rows__c"
+                            type="number"
+                            label="Skip Rows"
+                            value={configForm.Skip_Rows__c}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-4">
+                        <lightning-input
+                            data-field="Skip_Columns__c"
+                            type="number"
+                            label="Skip Columns"
+                            value={configForm.Skip_Columns__c}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-4">
+                        <lightning-input
+                            data-field="Header_Row_Number__c"
+                            type="number"
+                            label="Header Row Number"
+                            value={configForm.Header_Row_Number__c}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1 slds-large-size_1-of-4">
+                        <lightning-input
+                            data-field="Data_Start_Row_Number__c"
+                            type="number"
+                            label="Data Start Row Number"
+                            value={configForm.Data_Start_Row_Number__c}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-input>
+                    </div>
+                    <div class="slds-col slds-size_1-of-1">
+                        <lightning-textarea
+                            data-field="Notes__c"
+                            label="Notes"
+                            value={configForm.Notes__c}
+                            onchange={handleConfigFieldChange}
+                        ></lightning-textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="slds-m-top_large">
+                <div class="section-header section-header--between">
+                    <h2 class="slds-text-heading_small">Column Mappings</h2>
+                    <lightning-button
+                        label="Add Mapping Row"
+                        variant="neutral"
+                        onclick={handleAddMappingRow}
+                    ></lightning-button>
+                </div>
+
+                <div class="slds-m-top_small">
+                    <lightning-input
+                        type="search"
+                        label="Filter Salesforce Field API Options"
+                        value={fieldFilter}
+                        onchange={handleFieldFilterChange}
+                        placeholder="Type to filter dropdown values"
+                    ></lightning-input>
+                </div>
+
+                <template lwc:if={isLoadingMappings}>
+                    <lightning-spinner size="small" alternative-text="Loading mappings"></lightning-spinner>
+                </template>
+
+                <template lwc:if={hasMappings}>
+                    <div class="mapping-list slds-m-top_small">
+                        <template for:each={mappingRows} for:item="row">
+                            <div key={row._rowKey} class="mapping-row">
+                                <div class="mapping-row-header">
+                                    <h3 class="mapping-row-title">{row.Card_Title__c}</h3>
+                                    <lightning-button-icon
+                                        data-row-key={row._rowKey}
+                                        icon-name="utility:close"
+                                        alternative-text="Remove"
+                                        title="Remove mapping row"
+                                        onclick={handleRemoveMappingRow}
+                                        variant="bare"
+                                        size="small"
+                                    ></lightning-button-icon>
+                                </div>
+
+                                <lightning-combobox
+                                    data-row-key={row._rowKey}
+                                    data-field="Excel_Column__c"
+                                    label="Excel Column"
+                                    value={row.Excel_Column__c}
+                                    options={excelColumnPickerOptions}
+                                    placeholder="A, B, AA"
+                                    onchange={handleRowValueChange}
+                                ></lightning-combobox>
+
+                                <lightning-input
+                                    data-row-key={row._rowKey}
+                                    data-field="Incoming_Header__c"
+                                    type="text"
+                                    label="Incoming Header"
+                                    value={row.Incoming_Header__c}
+                                    disabled
+                                ></lightning-input>
+
+                                <lightning-combobox
+                                    data-row-key={row._rowKey}
+                                    data-field="Salesforce_Field_API_Name__c"
+                                    label="Salesforce Field API"
+                                    value={row.Salesforce_Field_API_Name__c}
+                                    options={filteredFieldOptions}
+                                    placeholder="Select field"
+                                    onchange={handleRowValueChange}
+                                ></lightning-combobox>
+
+                                <lightning-input
+                                    data-row-key={row._rowKey}
+                                    data-field="Salesforce_Field_Label__c"
+                                    type="text"
+                                    label="Field Label"
+                                    value={row.Salesforce_Field_Label__c}
+                                    disabled
+                                ></lightning-input>
+
+                                <lightning-combobox
+                                    data-row-key={row._rowKey}
+                                    data-field="Data_Type__c"
+                                    label="Data Type"
+                                    value={row.Data_Type__c}
+                                    options={dataTypeOptions}
+                                    onchange={handleRowValueChange}
+                                ></lightning-combobox>
+
+                                <lightning-input
+                                    data-row-key={row._rowKey}
+                                    data-field="Default_Value__c"
+                                    type="text"
+                                    label="Default Value"
+                                    value={row.Default_Value__c}
+                                    onchange={handleRowValueChange}
+                                ></lightning-input>
+
+                                <div class="row-flags">
+                                    <lightning-input
+                                        data-row-key={row._rowKey}
+                                        data-field="Trim_Value__c"
+                                        type="checkbox"
+                                        label="Trim"
+                                        checked={row.Trim_Value__c}
+                                        onchange={handleRowValueChange}
+                                    ></lightning-input>
+                                    <lightning-input
+                                        data-row-key={row._rowKey}
+                                        data-field="Ignore_If_Blank__c"
+                                        type="checkbox"
+                                        label="Ignore Blank"
+                                        checked={row.Ignore_If_Blank__c}
+                                        onchange={handleRowValueChange}
+                                    ></lightning-input>
+                                    <lightning-input
+                                        data-row-key={row._rowKey}
+                                        data-field="Is_Enabled__c"
+                                        type="checkbox"
+                                        label="Enabled"
+                                        checked={row.Is_Enabled__c}
+                                        onchange={handleRowValueChange}
+                                    ></lightning-input>
+                                </div>
+
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <template lwc:else>
+                    <div class="empty-box slds-m-top_small">
+                        No mapping rows yet. Click "Add Mapping Row" to start.
+                    </div>
+                </template>
+            </div>
+
+            <div class="slds-m-top_large actions">
+                <lightning-button
+                    label="Save"
+                    variant="brand"
+                    onclick={handleSave}
+                    disabled={disableSave}
+                ></lightning-button>
+            </div>
+        </div>
+    </lightning-card>
+</template>
