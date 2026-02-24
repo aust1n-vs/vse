@@ -8,13 +8,18 @@ public with sharing class ExcelImportConfigController {
     }
 
     @AuraEnabled(cacheable=true)
-    public static List<Excel_Import_Config__c> getConfigs(String searchTerm, String targetObjectApiName) {
+    public static List<Excel_Import_Config__c> getConfigs(
+        String searchTerm,
+        String targetObjectApiName,
+        String distributor
+    ) {
         String trimmedSearch = (searchTerm == null) ? '' : searchTerm.trim();
         String trimmedTarget = (targetObjectApiName == null) ? '' : targetObjectApiName.trim();
+        String trimmedDistributor = (distributor == null) ? '' : distributor.trim();
         String prefix = '';
 
         String selectClause =
-            'SELECT Id, Name, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c, ' +
+            'SELECT Id, Name, Distributor__c, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c, ' +
             'Header_Row_Number__c, Data_Start_Row_Number__c, Active__c, Notes__c, LastModifiedDate ' +
             'FROM Excel_Import_Config__c';
 
@@ -27,6 +32,10 @@ public with sharing class ExcelImportConfigController {
         if (!String.isBlank(trimmedSearch)) {
             prefix = trimmedSearch + '%';
             whereParts.add('Name LIKE :prefix');
+        }
+
+        if (!String.isBlank(trimmedDistributor)) {
+            whereParts.add('Distributor__c = :trimmedDistributor');
         }
 
         String soql = selectClause;
@@ -44,6 +53,28 @@ public with sharing class ExcelImportConfigController {
     }
 
     @AuraEnabled(cacheable=true)
+    public static List<String> getDistributorOptions() {
+        try {
+            List<String> result = new List<String>();
+            for (AggregateResult ar : [
+                SELECT Distributor__c dist
+                FROM Excel_Import_Config__c
+                WHERE Distributor__c != null AND Distributor__c != ''
+                GROUP BY Distributor__c
+                ORDER BY Distributor__c ASC
+            ]) {
+                String value = (String) ar.get('dist');
+                if (!String.isBlank(value)) {
+                    result.add(value);
+                }
+            }
+            return result;
+        } catch (Exception ex) {
+            throw new AuraHandledException('Failed to load distributors: ' + ex.getMessage());
+        }
+    }
+
+    @AuraEnabled(cacheable=true)
     public static List<Excel_Column_Mapping__c> getConfigMappings(Id configId) {
         if (configId == null) {
             return new List<Excel_Column_Mapping__c>();
@@ -53,7 +84,7 @@ public with sharing class ExcelImportConfigController {
             return [
                 SELECT Id, Config__c, Sequence__c, Excel_Column__c, Excel_Column_Index__c,
                        Salesforce_Field_API_Name__c, Salesforce_Field_Label__c, Data_Type__c,
-                       Default_Value__c, Trim_Value__c, Ignore_If_Blank__c, Is_Enabled__c
+                       Default_Value__c, Trim_Value__c
                 FROM Excel_Column_Mapping__c
                 WHERE Config__c = :configId
                 ORDER BY Sequence__c ASC, CreatedDate ASC
@@ -71,7 +102,7 @@ public with sharing class ExcelImportConfigController {
 
         try {
             return [
-                SELECT Id, Name, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c,
+                SELECT Id, Name, Distributor__c, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c,
                        Header_Row_Number__c, Data_Start_Row_Number__c, Active__c, Notes__c, LastModifiedDate
                 FROM Excel_Import_Config__c
                 WHERE Id = :configId
@@ -100,6 +131,7 @@ public with sharing class ExcelImportConfigController {
         }
 
         configToSave.Name = config.Name;
+        configToSave.Distributor__c = config.Distributor__c;
         configToSave.Target_Object_API_Name__c = config.Target_Object_API_Name__c;
         configToSave.Sheet_Name__c = config.Sheet_Name__c;
         configToSave.Skip_Rows__c = config.Skip_Rows__c;
@@ -145,8 +177,6 @@ public with sharing class ExcelImportConfigController {
                 newRow.Data_Type__c = row.Data_Type__c;
                 newRow.Default_Value__c = row.Default_Value__c;
                 newRow.Trim_Value__c = row.Trim_Value__c;
-                newRow.Ignore_If_Blank__c = row.Ignore_If_Blank__c;
-                newRow.Is_Enabled__c = row.Is_Enabled__c;
                 rowsToInsert.add(newRow);
             }
 
@@ -156,7 +186,7 @@ public with sharing class ExcelImportConfigController {
 
             SaveResult result = new SaveResult();
             result.config = [
-                SELECT Id, Name, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c,
+                SELECT Id, Name, Distributor__c, Target_Object_API_Name__c, Sheet_Name__c, Skip_Rows__c, Skip_Columns__c,
                        Header_Row_Number__c, Data_Start_Row_Number__c, Active__c, Notes__c, LastModifiedDate
                 FROM Excel_Import_Config__c
                 WHERE Id = :savedConfigId
@@ -165,7 +195,7 @@ public with sharing class ExcelImportConfigController {
             result.mappings = [
                 SELECT Id, Config__c, Sequence__c, Excel_Column__c, Excel_Column_Index__c,
                        Salesforce_Field_API_Name__c, Salesforce_Field_Label__c, Data_Type__c,
-                       Default_Value__c, Trim_Value__c, Ignore_If_Blank__c, Is_Enabled__c
+                       Default_Value__c, Trim_Value__c
                 FROM Excel_Column_Mapping__c
                 WHERE Config__c = :savedConfigId
                 ORDER BY Sequence__c ASC, CreatedDate ASC

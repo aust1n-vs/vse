@@ -90,6 +90,11 @@
     padding: 0.35rem 0.55rem;
 }
 
+.mapping-bottom-actions {
+    display: flex;
+    justify-content: flex-start;
+}
+
 @media (max-width: 64rem) {
     .mapping-row {
         grid-template-columns: repeat(2, minmax(8rem, 1fr));

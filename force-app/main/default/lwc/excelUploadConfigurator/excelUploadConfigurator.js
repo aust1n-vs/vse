@@ -4,6 +4,8 @@ import { loadScript } from 'lightning/platformResourceLoader';
 import VSSheetJS from '@salesforce/resourceUrl/VSSheetJS';
 import getConfigById from '@salesforce/apex/ExcelImportConfigController.getConfigById';
 import getConfigMappings from '@salesforce/apex/ExcelImportConfigController.getConfigMappings';
+import getConfigs from '@salesforce/apex/ExcelImportConfigController.getConfigs';
+import getDistributorOptions from '@salesforce/apex/ExcelImportConfigController.getDistributorOptions';
 import saveConfig from '@salesforce/apex/ExcelImportConfigController.saveConfig';
 
 const TARGET_OBJECT_OPTIONS = [
@@ -55,6 +57,12 @@ const DATA_TYPE_OPTIONS = [
     { label: 'Boolean', value: 'Boolean' }
 ];
 
+const NONE_EXCEL_COLUMN_VALUE = 'DEFAULT';
+const NONE_EXCEL_COLUMN_OPTION = {
+    label: 'None (Use Default Value)',
+    value: NONE_EXCEL_COLUMN_VALUE
+};
+
 function makeExcelColumnOptions(maxColumns) {
     const options = [];
     for (let idx = 0; idx < maxColumns; idx += 1) {
@@ -82,35 +90,26 @@ export default class ExcelUploadConfigurator extends LightningElement {
     @track mappingRows = [];
     @track parsedHeaders = [];
     @track sheetOptions = [];
+    @track distributorOptions = [{ label: 'All Distributors', value: '' }];
+    @track configOptions = [];
 
     selectedConfigId = '';
-    fieldFilter = '';
+    selectedDistributor = '';
     uploadedFileName = '';
 
     errorMessage = '';
     isLoadingMappings = false;
+    isLoadingConfigs = false;
     isSaving = false;
     isParsingFile = false;
 
     workbook = null;
     sheetJsReady = false;
     sheetJsLoadPromise = null;
+    filtersInitialized = false;
 
     get fullFieldOptions() {
         return SALESFORCE_FIELD_OPTIONS[this.configForm.Target_Object_API_Name__c] || [];
-    }
-
-    get filteredFieldOptions() {
-        const filter = this.fieldFilter.trim().toLowerCase();
-        if (!filter) {
-            return this.fullFieldOptions;
-        }
-
-        return this.fullFieldOptions.filter(
-            (opt) =>
-                opt.label.toLowerCase().includes(filter) ||
-                opt.value.toLowerCase().includes(filter)
-        );
     }
 
     get hasMappings() {
@@ -127,7 +126,7 @@ export default class ExcelUploadConfigurator extends LightningElement {
 
     get excelColumnPickerOptions() {
         if (!this.hasParsedHeaders) {
-            return this.excelColumnOptions;
+            return [NONE_EXCEL_COLUMN_OPTION, ...this.excelColumnOptions];
         }
 
         const optionMap = new Map();
@@ -137,6 +136,8 @@ export default class ExcelUploadConfigurator extends LightningElement {
                 value: item.column
             });
         });
+
+        optionMap.set(NONE_EXCEL_COLUMN_OPTION.value, NONE_EXCEL_COLUMN_OPTION);
 
         this.mappingRows.forEach((row) => {
             const column = String(row.Excel_Column__c || '').toUpperCase();
@@ -148,31 +149,30 @@ export default class ExcelUploadConfigurator extends LightningElement {
         return Array.from(optionMap.values());
     }
 
-    get canRefreshHeaders() {
-        return Boolean(this.workbook) && !this.isParsingFile;
-    }
-
-    get disableRefreshHeaders() {
-        return !this.canRefreshHeaders;
-    }
-
     get disableSave() {
         return this.isSaving || !String(this.configForm.Name || '').trim();
     }
 
-    get configPickerFilter() {
-        return {
-            criteria: [
-                {
-                    fieldPath: 'Target_Object_API_Name__c',
-                    operator: 'eq',
-                    value: this.configForm.Target_Object_API_Name__c
-                }
-            ]
-        };
+    get hasUploadedWorkbook() {
+        return Boolean(this.workbook);
     }
 
-    handleTargetObjectChange(event) {
+    async initializeFilters() {
+        if (this.filtersInitialized) {
+            return;
+        }
+
+        this.errorMessage = '';
+        try {
+            await this.loadDistributorFilterOptions();
+            await this.loadConfigOptions();
+            this.filtersInitialized = true;
+        } catch (error) {
+            this.errorMessage = this.getErrorMessage(error);
+        }
+    }
+
+    async handleTargetObjectChange(event) {
         const newTarget = event.detail.value;
         if (newTarget === this.configForm.Target_Object_API_Name__c) {
             return;
@@ -183,19 +183,30 @@ export default class ExcelUploadConfigurator extends LightningElement {
             Target_Object_API_Name__c: newTarget
         };
 
-        this.fieldFilter = '';
-        this.resetSelection(true);
+        this.resetSelection(true, true);
+        await this.refreshConfigOptionsSafe();
         if (this.hasParsedHeaders) {
             this.mergeMappingRowsFromHeaders(this.parsedHeaders);
         }
     }
 
-    async handleRecordPickerChange(event) {
-        this.selectedConfigId = event.detail.recordId || '';
+    async handleDistributorChange(event) {
+        const newDistributor = event.detail.value || '';
+        this.selectedDistributor = newDistributor;
+        this.configForm = {
+            ...this.configForm,
+            Distributor__c: newDistributor
+        };
+        this.resetSelection(true, true);
+        await this.refreshConfigOptionsSafe();
+    }
+
+    async handleConfigChange(event) {
+        this.selectedConfigId = event.detail.value || '';
         this.errorMessage = '';
 
         if (!this.selectedConfigId) {
-            this.resetSelection(true);
+            this.resetSelection(true, true);
             return;
         }
 
@@ -205,13 +216,14 @@ export default class ExcelUploadConfigurator extends LightningElement {
             const selected = await getConfigById({ configId: this.selectedConfigId });
 
             if (!selected) {
-                this.resetSelection(true);
+                this.resetSelection(true, true);
                 return;
             }
 
             this.configForm = {
                 Id: selected.Id,
                 Name: selected.Name,
+                Distributor__c: selected.Distributor__c || '',
                 Target_Object_API_Name__c: selected.Target_Object_API_Name__c,
                 Sheet_Name__c: selected.Sheet_Name__c || '',
                 Skip_Rows__c: selected.Skip_Rows__c == null ? 0 : selected.Skip_Rows__c,
@@ -222,6 +234,8 @@ export default class ExcelUploadConfigurator extends LightningElement {
                 Active__c: true,
                 Notes__c: selected.Notes__c || ''
             };
+            this.selectedDistributor = selected.Distributor__c || this.selectedDistributor;
+            this.ensureDistributorOptionExists(this.selectedDistributor);
 
             if (this.workbook && window.XLSX) {
                 this.parsedHeaders = this.extractHeadersFromWorkbook(this.workbook);
@@ -242,6 +256,45 @@ export default class ExcelUploadConfigurator extends LightningElement {
         this.mappingRows = rows.map((row, idx) => this.normalizeMappingRow(row, idx));
     }
 
+    async loadDistributorFilterOptions() {
+        const values = await getDistributorOptions();
+        const options = [{ label: 'All Distributors', value: '' }];
+        (values || []).forEach((value) => {
+            options.push({ label: value, value });
+        });
+        this.distributorOptions = options;
+    }
+
+    async loadConfigOptions() {
+        this.isLoadingConfigs = true;
+        try {
+            const rows = await getConfigs({
+                searchTerm: '',
+                targetObjectApiName: this.configForm.Target_Object_API_Name__c,
+                distributor: this.selectedDistributor
+            });
+            this.configOptions = (rows || []).map((row) => ({
+                label: row.Name,
+                value: row.Id
+            }));
+
+            const selectedStillExists = this.configOptions.some((opt) => opt.value === this.selectedConfigId);
+            if (!selectedStillExists) {
+                this.selectedConfigId = '';
+            }
+        } finally {
+            this.isLoadingConfigs = false;
+        }
+    }
+
+    async refreshConfigOptionsSafe() {
+        try {
+            await this.loadConfigOptions();
+        } catch (error) {
+            this.errorMessage = this.getErrorMessage(error);
+        }
+    }
+
     handleConfigFieldChange(event) {
         const fieldName = event.target.dataset.field;
         const value = event.detail ? event.detail.value : event.target.value;
@@ -251,14 +304,17 @@ export default class ExcelUploadConfigurator extends LightningElement {
             [fieldName]: value
         };
 
+        if (fieldName === 'Distributor__c') {
+            const distributor = String(value || '').trim();
+            this.selectedDistributor = distributor;
+            this.ensureDistributorOptionExists(distributor);
+        }
+
         if (this.workbook && HEADER_REFRESH_TRIGGER_FIELDS.includes(fieldName)) {
             this.rebuildHeadersFromWorkbook();
         }
     }
 
-    handleFieldFilterChange(event) {
-        this.fieldFilter = event.detail.value || '';
-    }
 
     async handleExcelFileChange(event) {
         const [file] = event.target.files || [];
@@ -293,6 +349,11 @@ export default class ExcelUploadConfigurator extends LightningElement {
             };
 
             this.rebuildHeadersFromWorkbook();
+            const wasInitialized = this.filtersInitialized;
+            await this.initializeFilters();
+            if (wasInitialized) {
+                await this.refreshConfigOptionsSafe();
+            }
             this.showToast('File parsed', `Loaded headers from ${file.name}`, 'success');
         } catch (error) {
             this.workbook = null;
@@ -304,10 +365,6 @@ export default class ExcelUploadConfigurator extends LightningElement {
         } finally {
             this.isParsingFile = false;
         }
-    }
-
-    handleRefreshHeaders() {
-        this.rebuildHeadersFromWorkbook();
     }
 
     handleAddMappingRow() {
@@ -393,6 +450,7 @@ export default class ExcelUploadConfigurator extends LightningElement {
         const payloadConfig = {
             Id: this.configForm.Id,
             Name: this.configForm.Name,
+            Distributor__c: String(this.configForm.Distributor__c || '').trim(),
             Target_Object_API_Name__c: this.configForm.Target_Object_API_Name__c,
             Sheet_Name__c: this.configForm.Sheet_Name__c,
             Skip_Rows__c: this.normalizeNumber(this.configForm.Skip_Rows__c, 0),
@@ -403,21 +461,31 @@ export default class ExcelUploadConfigurator extends LightningElement {
             Notes__c: this.configForm.Notes__c
         };
 
-        const payloadMappings = this.mappingRows
+        let payloadMappings = this.mappingRows
             .map((row) => ({
                 Sequence__c: this.normalizeNumber(row.Sequence__c, null),
-                Excel_Column__c: String(row.Excel_Column__c || '').trim().toUpperCase(),
+                Excel_Column__c: this.normalizeExcelColumnForSave(
+                    row.Excel_Column__c,
+                    row.Default_Value__c
+                ),
                 Excel_Column_Index__c: this.normalizeNumber(row.Excel_Column_Index__c, null),
                 Salesforce_Field_API_Name__c: String(row.Salesforce_Field_API_Name__c || '').trim(),
                 Salesforce_Field_Label__c: String(row.Salesforce_Field_Label__c || '').trim(),
                 Data_Type__c: row.Data_Type__c || 'Auto',
                 Default_Value__c: row.Default_Value__c,
                 Trim_Value__c: row.Trim_Value__c,
-                Ignore_If_Blank__c: row.Ignore_If_Blank__c,
-                Is_Enabled__c: row.Is_Enabled__c
+                Ignore_If_Blank__c: false,
+                Is_Enabled__c: true
             }))
-            .filter((row) => row.Excel_Column__c)
+            .filter((row) => {
+                const hasDefault = Boolean(String(row.Default_Value__c || '').trim());
+                const hasSourceColumn =
+                    Boolean(row.Excel_Column__c) && !this.isNoneExcelColumn(row.Excel_Column__c);
+                return hasSourceColumn || hasDefault;
+            })
             .filter((row) => row.Salesforce_Field_API_Name__c);
+
+        payloadMappings = this.ensureDistributorDefaultMapping(payloadMappings, payloadConfig.Distributor__c);
 
         try {
             const result = await saveConfig({
@@ -432,6 +500,9 @@ export default class ExcelUploadConfigurator extends LightningElement {
                 Active__c: true
             };
 
+            this.selectedDistributor = result.config.Distributor__c || '';
+            this.ensureDistributorOptionExists(this.selectedDistributor);
+            await this.refreshConfigOptionsSafe();
             this.selectedConfigId = result.config.Id;
             this.mappingRows = (result.mappings || []).map((row, idx) => this.normalizeMappingRow(row, idx));
 
@@ -457,7 +528,7 @@ export default class ExcelUploadConfigurator extends LightningElement {
             Data_Type__c: rawRow.Data_Type__c || 'Auto',
             Default_Value__c: rawRow.Default_Value__c || '',
             Trim_Value__c: rawRow.Trim_Value__c == null ? true : rawRow.Trim_Value__c,
-            Ignore_If_Blank__c: rawRow.Ignore_If_Blank__c == null ? false : rawRow.Ignore_If_Blank__c,
+            Ignore_If_Blank__c: false,
             Is_Enabled__c: rawRow.Is_Enabled__c == null ? true : rawRow.Is_Enabled__c
         });
     }
@@ -483,6 +554,7 @@ export default class ExcelUploadConfigurator extends LightningElement {
         return {
             Id: null,
             Name: '',
+            Distributor__c: '',
             Target_Object_API_Name__c: 'Sellthru__c',
             Sheet_Name__c: '',
             Skip_Rows__c: 0,
@@ -494,16 +566,33 @@ export default class ExcelUploadConfigurator extends LightningElement {
         };
     }
 
-    resetSelection(keepFormTarget) {
+    resetSelection(keepFormTarget, keepDistributor) {
         const target = keepFormTarget ? this.configForm.Target_Object_API_Name__c : 'Sellthru__c';
+        const distributor = keepDistributor ? this.selectedDistributor : '';
 
         this.selectedConfigId = '';
         this.mappingRows = [];
         this.configForm = {
             ...this.defaultConfigForm(),
+            Distributor__c: distributor,
             Target_Object_API_Name__c: target,
             Active__c: true
         };
+    }
+
+    ensureDistributorOptionExists(distributor) {
+        const value = String(distributor || '').trim();
+        if (!value) {
+            return;
+        }
+        if (!this.distributorOptions.some((opt) => opt.value === value)) {
+            const options = [...this.distributorOptions, { label: value, value }];
+            const allOption = options.find((opt) => opt.value === '');
+            const valueOptions = options
+                .filter((opt) => opt.value !== '')
+                .sort((a, b) => a.label.localeCompare(b.label));
+            this.distributorOptions = allOption ? [allOption, ...valueOptions] : valueOptions;
+        }
     }
 
     async ensureSheetJsLoaded() {
@@ -651,7 +740,7 @@ export default class ExcelUploadConfigurator extends LightningElement {
                 Data_Type__c: existing ? existing.Data_Type__c : 'Auto',
                 Default_Value__c: existing ? existing.Default_Value__c : '',
                 Trim_Value__c: existing ? existing.Trim_Value__c : true,
-                Ignore_If_Blank__c: existing ? existing.Ignore_If_Blank__c : false,
+                Ignore_If_Blank__c: false,
                 Is_Enabled__c: existing ? existing.Is_Enabled__c : true
             };
 
@@ -674,7 +763,9 @@ export default class ExcelUploadConfigurator extends LightningElement {
         const sequence = this.normalizeNumber(row.Sequence__c, null);
         const columnIndex = this.normalizeNumber(row.Excel_Column_Index__c, null);
         const incomingHeader = String(row.Incoming_Header__c || '').trim();
-        const excelColumn = String(row.Excel_Column__c || '').trim();
+        const excelColumn = this.isNoneExcelColumn(row.Excel_Column__c)
+            ? ''
+            : String(row.Excel_Column__c || '').trim();
         const displayIndex = columnIndex !== null && columnIndex !== undefined ? columnIndex : sequence;
 
         let title;
@@ -694,6 +785,91 @@ export default class ExcelUploadConfigurator extends LightningElement {
             ...row,
             Card_Title__c: title
         };
+    }
+
+    ensureDistributorDefaultMapping(mappings, distributorValue) {
+        const normalizedDistributor = String(distributorValue || '').trim();
+        if (!normalizedDistributor) {
+            return mappings;
+        }
+
+        const distributorField = this.resolveDistributorFieldOption();
+        if (!distributorField) {
+            return mappings;
+        }
+
+        const hasDistributorMapping = mappings.some(
+            (row) => String(row.Salesforce_Field_API_Name__c || '').trim() === distributorField.value
+        );
+        if (hasDistributorMapping) {
+            return mappings;
+        }
+
+        const nextSequence = this.getNextSequenceFromMappings(mappings);
+        return [
+            ...mappings,
+            {
+                Sequence__c: nextSequence,
+                Excel_Column__c: NONE_EXCEL_COLUMN_VALUE,
+                Excel_Column_Index__c: null,
+                Salesforce_Field_API_Name__c: distributorField.value,
+                Salesforce_Field_Label__c: distributorField.label,
+                Data_Type__c: 'Text',
+                Default_Value__c: normalizedDistributor,
+                Trim_Value__c: true,
+                Ignore_If_Blank__c: false,
+                Is_Enabled__c: true
+            }
+        ];
+    }
+
+    resolveDistributorFieldOption() {
+        const preferredByTarget = {
+            Sellthru__c: 'Distributor__c',
+            Stock__c: 'Tier_Distributor__c'
+        };
+
+        const preferredApi = preferredByTarget[this.configForm.Target_Object_API_Name__c];
+        if (preferredApi) {
+            const preferred = this.fullFieldOptions.find((opt) => opt.value === preferredApi);
+            if (preferred) {
+                return preferred;
+            }
+        }
+
+        return this.fullFieldOptions.find(
+            (opt) =>
+                String(opt.value || '').toLowerCase().includes('distributor') ||
+                String(opt.label || '').toLowerCase().includes('distributor')
+        );
+    }
+
+    getNextSequenceFromMappings(mappings) {
+        if (!mappings.length) {
+            return 1;
+        }
+
+        const maxSeq = Math.max(
+            ...mappings.map((row) => this.normalizeNumber(row.Sequence__c, 0))
+        );
+        return maxSeq + 1;
+    }
+
+    isNoneExcelColumn(value) {
+        return String(value || '').trim().toUpperCase() === NONE_EXCEL_COLUMN_VALUE;
+    }
+
+    normalizeExcelColumnForSave(excelColumn, defaultValue) {
+        const normalized = String(excelColumn || '').trim().toUpperCase();
+        if (normalized) {
+            return normalized;
+        }
+
+        if (String(defaultValue || '').trim()) {
+            return NONE_EXCEL_COLUMN_VALUE;
+        }
+
+        return '';
     }
 
     findHeaderByColumn(columnName) {

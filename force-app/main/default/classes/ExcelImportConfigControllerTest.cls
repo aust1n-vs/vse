@@ -3,6 +3,7 @@ private class ExcelImportConfigControllerTest {
     private static Excel_Import_Config__c makeConfig(String name, String target) {
         return new Excel_Import_Config__c(
             Name = name,
+            Distributor__c = 'Ingram',
             Target_Object_API_Name__c = target,
             Sheet_Name__c = 'Sheet1',
             Skip_Rows__c = 0,
@@ -39,16 +40,38 @@ private class ExcelImportConfigControllerTest {
         for (Integer i = 0; i < 12; i++) {
             rows.add(makeConfig('Sell Config ' + i, 'Sellthru__c'));
         }
+        rows.add(new Excel_Import_Config__c(
+            Name = 'Sell Config Amazon',
+            Distributor__c = 'Amazon',
+            Target_Object_API_Name__c = 'Sellthru__c',
+            Sheet_Name__c = 'Sheet1',
+            Header_Row_Number__c = 1,
+            Data_Start_Row_Number__c = 2,
+            Active__c = true
+        ));
+        rows.add(new Excel_Import_Config__c(
+            Name = 'Sell Config Zebra',
+            Distributor__c = 'Zebra',
+            Target_Object_API_Name__c = 'Sellthru__c',
+            Sheet_Name__c = 'Sheet1',
+            Header_Row_Number__c = 1,
+            Data_Start_Row_Number__c = 2,
+            Active__c = true
+        ));
         insert rows;
 
         Test.startTest();
-        List<Excel_Import_Config__c> recent = ExcelImportConfigController.getConfigs('', 'Sellthru__c');
-        List<Excel_Import_Config__c> searched = ExcelImportConfigController.getConfigs('Sell Config 1', 'Sellthru__c');
+        List<Excel_Import_Config__c> recent = ExcelImportConfigController.getConfigs('', 'Sellthru__c', '');
+        List<Excel_Import_Config__c> searched = ExcelImportConfigController.getConfigs('Sell Config 1', 'Sellthru__c', 'Ingram');
+        List<String> distributors = ExcelImportConfigController.getDistributorOptions();
         Test.stopTest();
 
         System.assertEquals(10, recent.size(), 'Empty search should return the most recent 10 rows.');
         System.assert(searched.size() >= 1, 'Prefix search should find at least one row.');
         System.assertEquals('Sellthru__c', searched[0].Target_Object_API_Name__c);
+        System.assertEquals('Ingram', searched[0].Distributor__c);
+        System.assert(distributors.contains('Ingram'));
+        System.assertEquals('Amazon', distributors[0], 'Distributor list should be ascending.');
     }
 
     @IsTest
@@ -127,6 +150,7 @@ private class ExcelImportConfigControllerTest {
 
         System.assertEquals(cfg.Id, updated.config.Id);
         System.assertEquals('Base Config Updated', updated.config.Name);
+        System.assertEquals('Ingram', updated.config.Distributor__c);
         System.assertEquals(2, updated.mappings.size());
         System.assertEquals('Distributor__c', updated.mappings[0].Salesforce_Field_API_Name__c);
 
